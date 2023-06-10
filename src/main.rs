@@ -6,6 +6,7 @@ mod gl {
 
 use glfw::{Action, Context, Key};
 use gl::types::*;
+use glam::{Mat4,Vec3};
 use std::f32::consts::PI;
 use std::ffi::CString;
 use std::mem;
@@ -19,18 +20,23 @@ static VERTEX_DATA: [GLfloat; 6] = [0.0, 0.5, 0.5, -0.5, -0.5, -0.5];
 // Shader sources
 static VS_SRC: &'static str = "
 #version 330
-in vec2 position;
+layout (location = 0) in vec2 v_position;
+
+uniform mat4 u_mvp;
 
 void main() {
-    gl_Position = vec4(position, 0.0, 1.0);
+    gl_Position = u_mvp * vec4(v_position, 0.0f, 1.0f);
 }";
 
 static FS_SRC: &'static str = "
 #version 330
-out vec4 out_color;
+
+layout (location = 0) out vec4 f_color;
+
+uniform vec4 u_color = vec4(1.0f);
 
 void main() {
-    out_color = vec4(1.0, 1.0, 1.0, 1.0);
+    f_color = u_color;
 }";
 
 fn compile_shader(src: &str, ty: GLenum) -> GLuint {
@@ -102,6 +108,18 @@ fn link_program(vs: GLuint, fs: GLuint) -> GLuint {
     }
 }
 
+fn get_uniform(program: GLuint, uniform: &str) -> GLint {
+    let u = CString::new(uniform.as_bytes()).unwrap();
+    let mut l: GLint = -1;
+    unsafe {
+        l = gl::GetUniformLocation(program, u.as_ptr());
+        if l == -1 {
+            println!("notyetaWARN: no location for {}", uniform)
+        }
+    }
+    l
+}
+
 
 struct Vec2 {
     x: f32,
@@ -118,7 +136,9 @@ impl Vec2 {
 fn main() {
     let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
 
-    let (mut window, events) = glfw.create_window(1920, 1080, "Hello this is window", glfw::WindowMode::Windowed)
+    let width = 1920;
+    let height = 1080;
+    let (mut window, events) = glfw.create_window(width, height, "Hello this is window", glfw::WindowMode::Windowed)
         .expect("Failed to create GLFW window.");
 
     window.set_key_polling(true);
@@ -146,16 +166,19 @@ fn main() {
         vertices
     }
 
-    let circle = gen_circle(1.0f32, 32);
+    let circle = gen_circle(1.0f32, 28);
 
     let vs = compile_shader(VS_SRC, gl::VERTEX_SHADER);
     let fs = compile_shader(FS_SRC, gl::FRAGMENT_SHADER);
-    let program = link_program(vs, fs);
+    let prog = link_program(vs, fs);
 
     unsafe {
         gl::DeleteShader(vs);
         gl::DeleteShader(fs);
     }
+
+    let u_mvp_prog = get_uniform(prog, "u_mvp");
+    let u_color_prog = get_uniform(prog, "u_color");
 
     let mut vao: GLuint = 0;
     let mut vbo: GLuint = 0;
@@ -173,8 +196,6 @@ fn main() {
             gl::STATIC_DRAW,
         );
 
-        gl::UseProgram(program);
-
         gl::EnableVertexAttribArray(0);
         gl::VertexAttribPointer(
             0,
@@ -189,18 +210,31 @@ fn main() {
         gl::DeleteBuffers(1, &vbo);
     }
 
+    let model = Mat4::IDENTITY;
+    let view = Mat4::look_at_rh(Vec3::NEG_Z, Vec3::ZERO, Vec3::Y);
+    let projection = Mat4::perspective_rh(90.0f32, width as f32 / height as f32, 0.1f32, 100.0f32);
+
     while !window.should_close() {
         glfw.poll_events();
         for (_, event) in glfw::flush_messages(&events) {
             handle_window_event(&mut window, event);
         }
 
+        let mvp = projection * view * model;
+
         unsafe {
-            gl::BindVertexArray(vao);
             gl::ClearColor(0.0f32, 0.0f32, 0.0f32, 1.0f32);
             gl::Clear(gl::COLOR_BUFFER_BIT);
+
+            gl::UseProgram(prog);
+            gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
+            gl::Uniform4f(u_color_prog, 0.2549f32, 0.4117f32, 0.8823f32, 1.0f32);
+
+            gl::BindVertexArray(vao);
             gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle.len() as i32);
             gl::BindVertexArray(0);
+
+            gl::UseProgram(0);
         }
 
         window.swap_buffers();
@@ -208,7 +242,7 @@ fn main() {
 
     unsafe {
         gl::DeleteVertexArrays(1, &vao);
-        gl::DeleteProgram(program);
+        gl::DeleteProgram(prog);
     }
 }
 

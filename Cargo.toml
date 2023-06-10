@@ -7,6 +7,7 @@ build = "gl_generator.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+glam = "0.24.0"
 glfw = { version = "*", default-features = false }
 
 [build-dependencies]
