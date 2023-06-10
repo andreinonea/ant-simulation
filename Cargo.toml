@@ -1,0 +1,13 @@
+[package]
+name = "ant-simulation"
+version = "0.1.0"
+edition = "2021"
+build = "gl_generator.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+glfw = { version = "*", default-features = false }
+
+[build-dependencies]
+gl_generator = "0.14.0"
