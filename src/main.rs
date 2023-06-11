@@ -4,9 +4,10 @@ mod gl {
     include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
 }
 
+use glam::Vec4;
 use glfw::{Action, Context, Key};
 use gl::types::*;
-use glam::{Mat4,Vec3};
+use glam::{Mat4,Vec2, Vec3};
 use std::f32::consts::PI;
 use std::ffi::CString;
 use std::mem;
@@ -121,18 +122,6 @@ fn get_uniform(program: GLuint, uniform: &str) -> GLint {
 }
 
 
-struct Vec2 {
-    x: f32,
-    y: f32,
-}
-
-impl Vec2 {
-    fn new(x: f32, y: f32) -> Vec2 {
-        Vec2 {x, y}
-    }
-}
-
-
 fn main() {
     let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
 
@@ -165,6 +154,8 @@ fn main() {
 
         vertices
     }
+
+    let mut points: Vec<Vec2> = Vec::new();
 
     let circle = gen_circle(1.0f32, 28);
 
@@ -210,30 +201,43 @@ fn main() {
         gl::DeleteBuffers(1, &vbo);
     }
 
-    let model = Mat4::IDENTITY;
-    let view = Mat4::look_at_rh(Vec3::NEG_Z, Vec3::ZERO, Vec3::Y);
-    let projection = Mat4::perspective_rh(90.0f32, width as f32 / height as f32, 0.1f32, 100.0f32);
+    unsafe {
+        gl::Viewport(0, 0, width as GLsizei, height as GLsizei);
+    }
+
+    let view = Mat4::look_at_rh(Vec3::Z * 3.0f32, Vec3::ZERO, Vec3::Y);
+    let mut projection = Mat4::perspective_rh(90.0f32, width as f32 / height as f32, 0.1f32, 100.0f32);
 
     while !window.should_close() {
         glfw.poll_events();
         for (_, event) in glfw::flush_messages(&events) {
-            handle_window_event(&mut window, event);
+            handle_window_event(&mut window, event, &points, &view, &mut projection);
         }
 
-        let mvp = projection * view * model;
 
         unsafe {
             gl::ClearColor(0.0f32, 0.0f32, 0.0f32, 1.0f32);
             gl::Clear(gl::COLOR_BUFFER_BIT);
 
             gl::UseProgram(prog);
-            gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
+            gl::BindVertexArray(vao);
+
             gl::Uniform4f(u_color_prog, 0.2549f32, 0.4117f32, 0.8823f32, 1.0f32);
 
-            gl::BindVertexArray(vao);
+            let model = Mat4::IDENTITY;
+            let mvp = projection * view * model;
+            gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
             gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle.len() as i32);
-            gl::BindVertexArray(0);
 
+            let model = Mat4::from_translation(Vec3::new(1.0f32, 0.0f32, 0.0f32));
+            let mvp = projection * view * model;
+            gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
+            gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle.len() as i32);
+
+            gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle.len() as i32);
+            gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle.len() as i32);
+
+            gl::BindVertexArray(0);
             gl::UseProgram(0);
         }
 
@@ -246,10 +250,33 @@ fn main() {
     }
 }
 
-fn handle_window_event(window: &mut glfw::Window, event: glfw::WindowEvent) {
+fn handle_window_event(window: &mut glfw::Window, event: glfw::WindowEvent, points: &Vec<Vec2>, view: &Mat4, projection: &mut Mat4) {
     match event {
         glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
             window.set_should_close(true)
+        }
+        glfw::WindowEvent::FramebufferSize(width, height) => {
+            unsafe {
+                gl::Viewport(0, 0, width, height);
+            }
+            *projection = Mat4::perspective_rh(90.0f32, width as f32 / height as f32, 0.1f32, 100.0f32);
+        }
+        glfw::WindowEvent::Key(Key::T, _, Action::Release, _) => {
+            let (x, y) = window.get_cursor_pos();
+            println!("x: {x}, y: {y}");
+
+            let final_matrix = projection.mul_mat4(view).inverse();
+
+            let (w, h) = window.get_size();
+            let ndc = Vec3::new(x as f32 / w as f32, 1.0f32 - (y as f32 / h as f32), 1.0f32) * 2.0f32 - 1.0f32;
+            let homogeneous = final_matrix * Vec4::new(ndc.x, ndc.y, ndc.z, 1.0f32);
+
+            let world_pos = Vec3::new(homogeneous.x, homogeneous.y, homogeneous.z) / homogeneous.w;
+            println!("x: {} y: {}", world_pos.x, world_pos.y);
+        }
+        glfw::WindowEvent::MouseButton(glfw::MouseButtonLeft, Action::Release, _) => {
+            let (x, y) = window.get_cursor_pos();
+            println!("x: {x}, y: {y}");
         }
         _ => {}
     }
