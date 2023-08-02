@@ -120,10 +120,6 @@ fn get_uniform(program: GLuint, uniform: &str) -> GLint {
     }
 }
 
-// Problem starts here.
-const POINTS_OF_INTEREST: usize = 20;
-static mut distance_table: [[f32; POINTS_OF_INTEREST]; POINTS_OF_INTEREST] = [[0.0f32; POINTS_OF_INTEREST]; POINTS_OF_INTEREST];
-
 fn calculate_distance_squared(a: Vec2, b: Vec2) -> f32 {
     (a.x - b.x).powi(2) + (a.y - b.y).powi(2)
 }
@@ -163,6 +159,10 @@ fn random_path() -> Vec<u32> {
     vec
 }
 
+// Problem starts here.
+const POINTS_OF_INTEREST: usize = 10; // TODO: POIS
+static mut distance_table: [[f32; POINTS_OF_INTEREST]; POINTS_OF_INTEREST] = [[0.0f32; POINTS_OF_INTEREST]; POINTS_OF_INTEREST];
+
 static mut best_tour_distance: f32 = f32::MAX;
 static mut solution_counter: u128 = 0;
 
@@ -173,6 +173,13 @@ fn evaluate_distance(indices: &Vec<u32>) -> f32 {
         unsafe { tour_distance += distance_table[indices[i] as usize][indices[next_idx] as usize]; }
     }
     tour_distance
+}
+
+fn leave_pheromones(trace: &Vec<u32>) {
+    for i in 0..trace.len() {
+        let next_idx = (i + 1) % trace.len();
+        unsafe { pheromone_table[trace[i] as usize][trace[next_idx] as usize] += PHEROMONE_INTENSITY; }
+    }
 }
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
@@ -219,7 +226,7 @@ fn solve_brute(tx: mpsc::Sender<Vec<u32>>, points: Vec<Vec2>, indices: Vec<u32>)
         (1..=num).product()
     }
 
-    let num_solutions = factorial(indices.len() as u128 - 1) / 2;
+    let num_solutions = if POINTS_OF_INTEREST < 100 { factorial(indices.len() as u128 - 1) / 2 } else { 0 };
     generate_solutions(tx, points, indices.clone(), indices.len() - 1, num_solutions);
 }
 
@@ -227,8 +234,14 @@ fn solve_brute(tx: mpsc::Sender<Vec<u32>>, points: Vec<Vec2>, indices: Vec<u32>)
 // Ant colony optimization
 // settings:
 static mut should_ants_search: bool = true;
-const ANTS_IN_GROUP: usize = 5;
+const ANTS_IN_GROUP: usize = 5; // TODO: ANTS
 const DIST_POWER: i32 = 4;
+const INITIAL_PHEROMONE_STRENGTH: f32 = 1.0f32;
+const PHEROMONE_POWER: i32 = 1;
+const PHEROMONE_INTENSITY: f32 = 10.0f32;
+const EVAPORATION_RATE: f32 = 0.3f32;
+
+static mut pheromone_table: [[f32; POINTS_OF_INTEREST]; POINTS_OF_INTEREST] = [[INITIAL_PHEROMONE_STRENGTH; POINTS_OF_INTEREST]; POINTS_OF_INTEREST];
 
 fn ant_journey(tx: mpsc::Sender<Vec<u32>>, start_index: u32, to_visit: &mut Vec<u32>) {
     let mut trace: Vec<u32> = Vec::new();
@@ -238,19 +251,27 @@ fn ant_journey(tx: mpsc::Sender<Vec<u32>>, start_index: u32, to_visit: &mut Vec<
         trace.push(cur_index);
         to_visit.retain(|&i| i != cur_index);
 
-        let next_index = to_visit.choose_weighted(
+        let next = to_visit.choose_weighted(
             &mut rand::thread_rng(),
-            |potential_next_index| {
+            |i| {
+                let potential_next_index = i.to_owned();
                 unsafe {
-                    let dist = distance_table[cur_index as usize][potential_next_index.to_owned() as usize];
-                    let desirability = (1.0f32 / dist).powi(DIST_POWER);
+                    let dist = distance_table[cur_index as usize][potential_next_index as usize];
+                    let pheromone_strength = pheromone_table[cur_index as usize][potential_next_index as usize];
+                    let desirability = (1.0f32 / dist).powi(DIST_POWER) * pheromone_strength.powi(PHEROMONE_POWER);
                     desirability
                 }
             }
         );
 
-        match next_index {
-            Ok(next_index) => { cur_index = next_index.to_owned(); }
+        match next {
+            Ok(next) => {
+                let next_index = next.to_owned();
+                // unsafe {
+                //     pheromone_table[cur_index as usize][next_index as usize] += PHEROMONE_INTENSITY;
+                // }
+                cur_index = next_index;
+            }
             _ => { break; }
         }
     }
@@ -288,15 +309,25 @@ fn solve_ants(tx: mpsc::Sender<Vec<u32>>, points: Vec<Vec2>, indices: Vec<u32>) 
             handle.join().unwrap();
         }
 
+        let mut best_trace_in_group: Vec<u32> = Vec::new();
         for trace in rx_ant.try_iter() {
             unsafe {
                 let tour_distance = evaluate_distance(&trace);
                 if tour_distance < best_tour_distance {
                     best_tour_distance = tour_distance;
+                    best_trace_in_group = trace.to_owned();
                     tx.send(trace).unwrap();
                 }
             }
         }
+
+        leave_pheromones(&best_trace_in_group);
+
+        // for a in 0..POINTS_OF_INTEREST {
+        //     for b in 0..POINTS_OF_INTEREST {
+        //         unsafe { pheromone_table[a][b] = f32::min(1.0f32, pheromone_table[a][b] - EVAPORATION_RATE); }
+        //     }
+        // }
 
         total_ants += ANTS_IN_GROUP;
         println!("Ants: {total_ants}");
@@ -449,7 +480,7 @@ fn main() {
 
     let indices = path_indices.to_owned();
     let pois = points.to_owned();
-    thread::spawn(move || solve_ants(tx, pois, indices));
+    thread::spawn(move || solve_brute(tx, pois, indices)); // TODO: method
 
     while !window.should_close() {
         glfw.poll_events();
