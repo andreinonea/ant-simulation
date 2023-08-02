@@ -121,13 +121,34 @@ fn get_uniform(program: GLuint, uniform: &str) -> GLint {
 }
 
 
+fn ortho_rh(left: f32, right: f32, top: f32, bottom: f32) -> Mat4 {
+    Mat4::from_cols(
+        Vec4::new(2.0f32 / (right - left), 0.0, 0.0, 0.0),
+        Vec4::new(0.0, 2.0f32 / (top - bottom), 0.0, 0.0),
+        Vec4::new(0.0, 0.0, -1.0f32, 0.0),
+        Vec4::new(-(right + left) / (right - left), -(top + bottom) / (top - bottom), 0.0, 1.0f32))
+}
+
+fn ortho(left: f32, right: f32, top: f32, bottom: f32, near: f32, far: f32) -> Mat4 {
+    Mat4::from_cols(
+        Vec4::new(2.0f32 / (right - left), 0.0, 0.0, 0.0),
+        Vec4::new(0.0, 2.0f32 / (top - bottom), 0.0, 0.0),
+        Vec4::new(0.0, 0.0, 2.0f32 / (far - near), 0.0),
+        Vec4::new(-(right + left) / (right - left), -(top + bottom) / (top - bottom), -(far + near) / (far - near), 1.0f32))
+}
+
+
 fn main() {
     let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
 
     let width = 1920;
     let height = 1080;
-    let (mut window, events) = glfw.create_window(width, height, "Hello this is window", glfw::WindowMode::Windowed)
-        .expect("Failed to create GLFW window.");
+    let (mut window, events) = glfw.create_window(
+        width,
+        height,
+        "Ants solve the travelling salesman problem",
+        glfw::WindowMode::Windowed
+    ).expect("Failed to create GLFW window.");
 
     window.set_key_polling(true);
     window.set_mouse_button_polling(true);
@@ -202,13 +223,9 @@ fn main() {
         gl::DeleteBuffers(1, &vbo);
     }
 
-    let view = Mat4::look_at_rh(Vec3::Z * 3.0f32, Vec3::ZERO, Vec3::Y);
-    let mut projection = Mat4::perspective_rh(
-        90.0f32.to_radians(),
-        width as f32 / height as f32,
-        0.1f32,
-        100.0f32
-    );
+    let view = Mat4::look_at_rh(Vec3::Z * 1.0f32, Vec3::ZERO, Vec3::Y);
+    // let view = Mat4::IDENTITY;
+    let mut projection = ortho(0.0f32, width as f32, 0.0f32, height as f32, -1.0f32, 1.0f32);
 
     while !window.should_close() {
         glfw.poll_events();
@@ -267,12 +284,7 @@ fn handle_window_event(window: &mut glfw::Window, event: glfw::WindowEvent, poin
             unsafe {
                 gl::Viewport(0, 0, width, height);
             }
-            *projection = Mat4::perspective_rh(
-                90.0f32.to_radians(),
-                width as f32 / height as f32,
-                0.1f32,
-                100.0f32
-            );
+            *projection = ortho(0.0f32, width as f32, 0.0f32, height as f32, -1.0f32, 1.0f32);
         }
         glfw::WindowEvent::MouseButton(button, Action::Release, _) => {
             if button > glfw::MouseButton::Button2 {
@@ -294,7 +306,7 @@ fn handle_window_event(window: &mut glfw::Window, event: glfw::WindowEvent, poin
             match button {
                 glfw::MouseButtonLeft => {
                     println!("Adding destination");
-                    points.push(world_pos);
+                    points.push(Vec2::new(-1.0f32 + 2.0f32 * x as f32 / w as f32, 1.0f32 - 2.0f32 * y as f32 / h as f32));
                 }
                 glfw::MouseButtonRight => {
                     println!("Removing destination");
