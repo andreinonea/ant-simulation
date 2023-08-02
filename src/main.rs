@@ -111,14 +111,13 @@ fn link_program(vs: GLuint, fs: GLuint) -> GLuint {
 
 fn get_uniform(program: GLuint, uniform: &str) -> GLint {
     let u = CString::new(uniform.as_bytes()).unwrap();
-    let mut l: GLint = -1;
     unsafe {
-        l = gl::GetUniformLocation(program, u.as_ptr());
+        let l = gl::GetUniformLocation(program, u.as_ptr());
         if l == -1 {
             println!("notyetaWARN: no location for {}", uniform)
         }
+        l
     }
-    l
 }
 
 
@@ -131,6 +130,8 @@ fn main() {
         .expect("Failed to create GLFW window.");
 
     window.set_key_polling(true);
+    window.set_mouse_button_polling(true);
+    window.set_framebuffer_size_polling(true);
     window.make_current();
 
     gl::load_with(|s| window.get_proc_address(s) as *const _);
@@ -201,19 +202,21 @@ fn main() {
         gl::DeleteBuffers(1, &vbo);
     }
 
-    unsafe {
-        gl::Viewport(0, 0, width as GLsizei, height as GLsizei);
-    }
-
     let view = Mat4::look_at_rh(Vec3::Z * 3.0f32, Vec3::ZERO, Vec3::Y);
-    let mut projection = Mat4::perspective_rh(90.0f32, width as f32 / height as f32, 0.1f32, 100.0f32);
+    let mut projection = Mat4::perspective_rh(
+        90.0f32.to_radians(),
+        width as f32 / height as f32,
+        0.1f32,
+        100.0f32
+    );
 
     while !window.should_close() {
         glfw.poll_events();
         for (_, event) in glfw::flush_messages(&events) {
-            handle_window_event(&mut window, event, &points, &view, &mut projection);
+            handle_window_event(&mut window, event, &mut points, &view, &mut projection);
         }
 
+        let vp = projection * view;
 
         unsafe {
             gl::ClearColor(0.0f32, 0.0f32, 0.0f32, 1.0f32);
@@ -225,17 +228,21 @@ fn main() {
             gl::Uniform4f(u_color_prog, 0.2549f32, 0.4117f32, 0.8823f32, 1.0f32);
 
             let model = Mat4::IDENTITY;
-            let mvp = projection * view * model;
+            let mvp = vp * model;
             gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
             gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle.len() as i32);
 
-            let model = Mat4::from_translation(Vec3::new(1.0f32, 0.0f32, 0.0f32));
-            let mvp = projection * view * model;
+            let model = Mat4::from_translation(Vec3::new(-1.0f32, 0.047110435f32, 0.0f32)) * Mat4::IDENTITY;
+            let mvp = vp * model;
             gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
             gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle.len() as i32);
 
-            gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle.len() as i32);
-            gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle.len() as i32);
+            for pos in &points {
+                let model = Mat4::from_translation(Vec3::new(pos.x, pos.y, 0.0f32)) * Mat4::IDENTITY;
+                let mvp = vp * model;
+                gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
+                gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle.len() as i32);
+            }
 
             gl::BindVertexArray(0);
             gl::UseProgram(0);
@@ -250,33 +257,50 @@ fn main() {
     }
 }
 
-fn handle_window_event(window: &mut glfw::Window, event: glfw::WindowEvent, points: &Vec<Vec2>, view: &Mat4, projection: &mut Mat4) {
+fn handle_window_event(window: &mut glfw::Window, event: glfw::WindowEvent, points: &mut Vec<Vec2>, view: &Mat4, projection: &mut Mat4) {
     match event {
         glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
             window.set_should_close(true)
         }
         glfw::WindowEvent::FramebufferSize(width, height) => {
+            println!("FramebufferSize: {width}, {height}");
             unsafe {
                 gl::Viewport(0, 0, width, height);
             }
-            *projection = Mat4::perspective_rh(90.0f32, width as f32 / height as f32, 0.1f32, 100.0f32);
+            *projection = Mat4::perspective_rh(
+                90.0f32.to_radians(),
+                width as f32 / height as f32,
+                0.1f32,
+                100.0f32
+            );
         }
-        glfw::WindowEvent::Key(Key::T, _, Action::Release, _) => {
+        glfw::WindowEvent::MouseButton(button, Action::Release, _) => {
+            if button > glfw::MouseButton::Button2 {
+                return;
+            }
+
             let (x, y) = window.get_cursor_pos();
             println!("x: {x}, y: {y}");
 
             let final_matrix = projection.mul_mat4(view).inverse();
 
             let (w, h) = window.get_size();
-            let ndc = Vec3::new(x as f32 / w as f32, 1.0f32 - (y as f32 / h as f32), 1.0f32) * 2.0f32 - 1.0f32;
+            let ndc = Vec3::new(x as f32 / w as f32, 1.0f32 - (y as f32 / h as f32), -10.0f32) * 2.0f32 - 1.0f32;
             let homogeneous = final_matrix * Vec4::new(ndc.x, ndc.y, ndc.z, 1.0f32);
 
-            let world_pos = Vec3::new(homogeneous.x, homogeneous.y, homogeneous.z) / homogeneous.w;
-            println!("x: {} y: {}", world_pos.x, world_pos.y);
-        }
-        glfw::WindowEvent::MouseButton(glfw::MouseButtonLeft, Action::Release, _) => {
-            let (x, y) = window.get_cursor_pos();
-            println!("x: {x}, y: {y}");
+            let world_pos = Vec2::new(homogeneous.x, homogeneous.y) / homogeneous.w;
+            println!("{world_pos:?}");
+
+            match button {
+                glfw::MouseButtonLeft => {
+                    println!("Adding destination");
+                    points.push(world_pos);
+                }
+                glfw::MouseButtonRight => {
+                    println!("Removing destination");
+                }
+                _ => { return; }
+            }
         }
         _ => {}
     }
