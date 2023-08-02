@@ -120,9 +120,16 @@ fn get_uniform(program: GLuint, uniform: &str) -> GLint {
     }
 }
 
+// Problem starts here.
+const POINTS_OF_INTEREST: usize = 20;
+static mut distance_table: [[f32; POINTS_OF_INTEREST]; POINTS_OF_INTEREST] = [[0.0f32; POINTS_OF_INTEREST]; POINTS_OF_INTEREST];
+
+fn calculate_distance_squared(a: Vec2, b: Vec2) -> f32 {
+    (a.x - b.x).powi(2) + (a.y - b.y).powi(2)
+}
+
 fn point_in_circle(point: Vec2, circle: Vec2, circle_radius: f32) -> bool {
-    let distance: f32 = (point.x - circle.x).powi(2) + (point.y - circle.y).powi(2);
-    distance < circle_radius.powi(2)
+    calculate_distance_squared(point, circle) < circle_radius.powi(2)
 }
 
 fn randomize_pois(target: u32, left: f32, right: f32, bottom: f32, top: f32, exclude_radius_from_center: f32) -> Vec<Vec2> {
@@ -159,9 +166,17 @@ fn random_path() -> Vec<u32> {
 static mut best_tour_distance: f32 = f32::MAX;
 static mut solution_counter: u128 = 0;
 
-fn calculate_distance(points: Vec<Vec2>, a: usize, b: usize) -> f32 {
-    (points[a].x - points[b].x).powi(2) + (points[a].y - points[b].y).powi(2)
+fn evaluate_distance(indices: &Vec<u32>) -> f32 {
+    let mut tour_distance = 0.0f32;
+    for i in 0..indices.len() {
+        let next_idx = (i + 1) % indices.len();
+        unsafe { tour_distance += distance_table[indices[i] as usize][indices[next_idx] as usize]; }
+    }
+    tour_distance
 }
+
+// -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// BRUTE FORCE
 
 fn evaluate_solution(tx: mpsc::Sender<Vec<u32>>, points: Vec<Vec2>, indices: Vec<u32>, num_solutions: u128) {
     if indices[0] >= indices[indices.len() - 2] {
@@ -173,13 +188,8 @@ fn evaluate_solution(tx: mpsc::Sender<Vec<u32>>, points: Vec<Vec2>, indices: Vec
         println!("Searched: {} / {}", solution_counter, num_solutions);
     }
 
-    let mut tour_distance = 0.0f32;
-    for i in 0..indices.len() {
-        let next_idx = (i + 1) % indices.len();
-        tour_distance += calculate_distance(points.clone(), indices[i] as usize, indices[next_idx] as usize);
-    }
-
     unsafe {
+        let tour_distance = evaluate_distance(&indices);
         if tour_distance < best_tour_distance {
             best_tour_distance = tour_distance;
             tx.send(indices).unwrap();
@@ -199,7 +209,7 @@ fn generate_solutions(tx: mpsc::Sender<Vec<u32>>, points: Vec<Vec2>, mut indices
     }
 }
 
-fn solve(tx: mpsc::Sender<Vec<u32>>, points: Vec<Vec2>, indices: Vec<u32>) {
+fn solve_brute(tx: mpsc::Sender<Vec<u32>>, points: Vec<Vec2>, indices: Vec<u32>) {
     // loop {
     //     tx.send(random_path()).unwrap();
     //     thread::sleep(Duration::from_secs_f32(0.5f32));
@@ -211,6 +221,86 @@ fn solve(tx: mpsc::Sender<Vec<u32>>, points: Vec<Vec2>, indices: Vec<u32>) {
 
     let num_solutions = factorial(indices.len() as u128 - 1) / 2;
     generate_solutions(tx, points, indices.clone(), indices.len() - 1, num_solutions);
+}
+
+// -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// Ant colony optimization
+// settings:
+static mut should_ants_search: bool = true;
+const ANTS_IN_GROUP: usize = 5;
+const DIST_POWER: i32 = 4;
+
+fn ant_journey(tx: mpsc::Sender<Vec<u32>>, start_index: u32, to_visit: &mut Vec<u32>) {
+    let mut trace: Vec<u32> = Vec::new();
+    let mut cur_index = start_index;
+
+    loop {
+        trace.push(cur_index);
+        to_visit.retain(|&i| i != cur_index);
+
+        let next_index = to_visit.choose_weighted(
+            &mut rand::thread_rng(),
+            |potential_next_index| {
+                unsafe {
+                    let dist = distance_table[cur_index as usize][potential_next_index.to_owned() as usize];
+                    let desirability = (1.0f32 / dist).powi(DIST_POWER);
+                    desirability
+                }
+            }
+        );
+
+        match next_index {
+            Ok(next_index) => { cur_index = next_index.to_owned(); }
+            _ => { break; }
+        }
+    }
+
+    tx.send(trace).unwrap();
+}
+
+fn solve_ants(tx: mpsc::Sender<Vec<u32>>, points: Vec<Vec2>, indices: Vec<u32>) {
+    // let start_index = indices.choose(&mut rand::thread_rng()).un;
+    // let mut ant: Vec<u32> = vec![start_index];
+
+    // let mut journey = indices.clone();
+    // journey.shuffle(&mut rand::thread_rng());
+
+    let mut total_ants = 0;
+    loop  {
+        let ants: Vec<u32> = indices.choose_multiple(&mut rand::thread_rng(), ANTS_IN_GROUP).cloned().collect();
+        let mut handles: Vec<thread::JoinHandle<()>> = Vec::new();
+
+        let (tx_ant, rx_ant) = mpsc::channel();
+
+        for i in 0..ANTS_IN_GROUP {
+            let start_index = ants[i];
+
+            let mut to_visit = indices.to_owned();
+            let tx_ant_i = tx_ant.clone();
+            let handle = thread::spawn(move ||
+                ant_journey(tx_ant_i, start_index, &mut to_visit)
+            );
+            handles.push(handle);
+        }
+
+        for _ in 0..ANTS_IN_GROUP {
+            let handle = handles.remove(0);
+            handle.join().unwrap();
+        }
+
+        for trace in rx_ant.try_iter() {
+            unsafe {
+                let tour_distance = evaluate_distance(&trace);
+                if tour_distance < best_tour_distance {
+                    best_tour_distance = tour_distance;
+                    tx.send(trace).unwrap();
+                }
+            }
+        }
+
+        total_ants += ANTS_IN_GROUP;
+        println!("Ants: {total_ants}");
+    }
 }
 
 fn main() {
@@ -283,8 +373,15 @@ fn main() {
         gl::DeleteBuffers(1, &vbo_circle);
     }
 
-    let mut points = randomize_pois(10, -150.0f32, 150.0f32, -80.0f32, 80.0f32, 40.0f32);
+    let mut points = randomize_pois(POINTS_OF_INTEREST as u32, -150.0f32, 150.0f32, -80.0f32, 80.0f32, 40.0f32);
+    let lecount = points.len();
     let mut path_indices: Vec<u32> = (0..points.len() as u32).collect();
+
+    for a in 0..lecount {
+        for b in 0..lecount {
+            unsafe { distance_table[a][b] = calculate_distance_squared(points[a], points[b]); }
+        }
+    }
 
     let mut vao_path: GLuint = 0;
     let mut vbo_path: GLuint = 0;
@@ -352,7 +449,7 @@ fn main() {
 
     let indices = path_indices.to_owned();
     let pois = points.to_owned();
-    thread::spawn(move || solve(tx, pois, indices));
+    thread::spawn(move || solve_ants(tx, pois, indices));
 
     while !window.should_close() {
         glfw.poll_events();
@@ -418,7 +515,8 @@ fn main() {
 fn handle_window_event(window: &mut glfw::Window, event: glfw::WindowEvent, _points: &mut Vec<Vec2>, _view: &Mat4, projection: &mut Mat4) {
     match event {
         glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
-            window.set_should_close(true)
+            window.set_should_close(true);
+            unsafe { should_ants_search = false; }
         }
         glfw::WindowEvent::FramebufferSize(width, height) => {
             unsafe {
