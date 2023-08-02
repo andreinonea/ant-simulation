@@ -6,19 +6,17 @@ mod gl {
 
 use glfw::{Action, Context, Key};
 use gl::types::*;
-use glam::{Mat4,Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3};
+use rand::seq::SliceRandom;
 use std::f32::consts::PI;
 use std::ffi::CString;
-use std::ffi::c_void;
 use std::mem;
 use std::ptr;
-use std::ptr::null;
 use std::str;
+use std::sync::mpsc;
+use std::thread;
 use rand::distributions::{Distribution, Uniform};
 
-
-// Vertex data
-static VERTEX_DATA: [GLfloat; 6] = [0.0, 0.5, 0.5, -0.5, -0.5, -0.5];
 
 // Shader sources
 static VS_SRC: &'static str = "
@@ -152,6 +150,36 @@ fn randomize_pois(target: u32, left: f32, right: f32, bottom: f32, top: f32, exc
     pois
 }
 
+fn random_path() -> Vec<u32> {
+    let mut vec: Vec<u32> = (0..10).collect();
+    vec.shuffle(&mut rand::thread_rng());
+    vec
+}
+
+fn evaluate_solution(tx: mpsc::Sender<Vec<u32>>, indices: Vec<u32>) {
+    tx.send(indices).unwrap();
+}
+
+fn generate_solutions(tx: mpsc::Sender<Vec<u32>>, mut indices: Vec<u32>, n: usize) {
+    if n == 1 {
+        evaluate_solution(tx, indices);
+    } else {
+        for i in 0..n {
+            generate_solutions(tx.clone(), indices.clone(), n - 1);
+            let swap_index = if n % 2 == 0 { i } else { 0 };
+            (indices[swap_index], indices[n - 1]) = (indices[n - 1], indices[swap_index])
+        }
+    }
+}
+
+fn solve(tx: mpsc::Sender<Vec<u32>>, indices: Vec<u32>) {
+    // loop {
+    //     tx.send(random_path()).unwrap();
+    //     thread::sleep(Duration::from_secs_f32(0.5f32));
+    // }
+
+    generate_solutions(tx, indices.clone(), indices.len() - 1);
+}
 
 fn main() {
     let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
@@ -223,8 +251,9 @@ fn main() {
         gl::DeleteBuffers(1, &vbo_circle);
     }
 
-    let mut points = randomize_pois(10, -150.0f32, 150.0f32, -80.0f32, 80.0f32, 40.0f32);
+    let mut points = randomize_pois(5, -150.0f32, 150.0f32, -80.0f32, 80.0f32, 40.0f32);
     let mut path_indices: Vec<u32> = (0..points.len() as u32).collect();
+
     let mut vao_path: GLuint = 0;
     let mut vbo_path: GLuint = 0;
     let mut ibo_path: GLuint = 0;
@@ -256,7 +285,7 @@ fn main() {
 
         gl::BufferData(gl::ELEMENT_ARRAY_BUFFER,
             (path_indices.len() * mem::size_of::<u32>()) as GLsizeiptr,
-            mem::transmute(&path_indices[0]),
+            ptr::null(),
             gl::DYNAMIC_DRAW,
         );
 
@@ -264,7 +293,7 @@ fn main() {
         gl::DeleteBuffers(1, &vbo_path);
         gl::DeleteBuffers(1, &ibo_path);
 
-        gl::LineWidth(10.0f32);
+        gl::LineWidth(8.0f32);
     }
 
     let view = Mat4::look_at_rh(Vec3::Z * 100.0f32, Vec3::ZERO, Vec3::Y);
@@ -287,6 +316,11 @@ fn main() {
     let u_mvp_prog = get_uniform(prog, "u_mvp");
     let u_color_prog = get_uniform(prog, "u_color");
 
+    let (tx, rx) = mpsc::channel();
+
+    let indices = path_indices.to_owned();
+    thread::spawn(move || solve(tx, indices));
+
     while !window.should_close() {
         glfw.poll_events();
         for (_, event) in glfw::flush_messages(&events) {
@@ -304,16 +338,6 @@ fn main() {
 
             gl::BindVertexArray(vao_circle);
 
-            let model = Mat4::IDENTITY;
-            let mvp = vp * model;
-            gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
-            gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle_vertices.len() as i32);
-
-            let model = Mat4::from_translation(Vec3::new(-1.0f32, 0.047110435f32, 0.0f32)) * Mat4::IDENTITY;
-            let mvp = vp * model;
-            gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
-            gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle_vertices.len() as i32);
-
             for pos in &points {
                 let model = Mat4::from_translation(Vec3::new(pos.x, pos.y, 0.0f32)) * Mat4::IDENTITY;
                 let mvp = vp * model;
@@ -323,26 +347,30 @@ fn main() {
 
             gl::BindVertexArray(vao_path);
 
-
-            // let indices_buffer = gl::MapBufferRange(gl::ELEMENT_ARRAY_BUFFER,
-            //     0,
-            //     path_indices.len() as isize,
-            //     gl::MAP_WRITE_BIT | gl::MAP_INVALIDATE_BUFFER_BIT,
-            // );
-            // ptr::copy(
-            //     &path_indices[0] as *const usize as *mut c_void,
-            //     indices_buffer,
-            //     path_indices.len(),
-            // );
-            // gl::UnmapBuffer(gl::ELEMENT_ARRAY_BUFFER);
+            let indices_buffer = gl::MapBufferRange(gl::ELEMENT_ARRAY_BUFFER,
+                0,
+                (path_indices.len() * mem::size_of::<u32>()) as isize,
+                gl::MAP_WRITE_BIT | gl::MAP_INVALIDATE_BUFFER_BIT,
+            );
+            ptr::copy(
+                mem::transmute(&path_indices[0]),
+                indices_buffer,
+                path_indices.len() * mem::size_of::<u32>(),
+            );
+            gl::UnmapBuffer(gl::ELEMENT_ARRAY_BUFFER);
 
             let model = Mat4::IDENTITY;
             let mvp = vp * model;
             gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
-            gl::DrawElements(gl::LINE_LOOP, path_indices.len() as i32, gl::UNSIGNED_INT, null());
+            gl::DrawElements(gl::LINE_LOOP, path_indices.len() as GLsizei, gl::UNSIGNED_INT, ptr::null());
 
             gl::BindVertexArray(0);
             gl::UseProgram(0);
+        }
+
+        match rx.try_recv() {
+            Ok(res) => { path_indices = res; }
+            _ => {}
         }
 
         window.swap_buffers();
@@ -354,7 +382,7 @@ fn main() {
     }
 }
 
-fn handle_window_event(window: &mut glfw::Window, event: glfw::WindowEvent, points: &mut Vec<Vec2>, view: &Mat4, projection: &mut Mat4) {
+fn handle_window_event(window: &mut glfw::Window, event: glfw::WindowEvent, _points: &mut Vec<Vec2>, _view: &Mat4, projection: &mut Mat4) {
     match event {
         glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
             window.set_should_close(true)
