@@ -4,15 +4,17 @@ mod gl {
     include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
 }
 
-use glam::Vec4;
 use glfw::{Action, Context, Key};
 use gl::types::*;
 use glam::{Mat4,Vec2, Vec3};
 use std::f32::consts::PI;
 use std::ffi::CString;
+use std::ffi::c_void;
 use std::mem;
 use std::ptr;
+use std::ptr::null;
 use std::str;
+use rand::distributions::{Distribution, Uniform};
 
 
 // Vertex data
@@ -120,21 +122,34 @@ fn get_uniform(program: GLuint, uniform: &str) -> GLint {
     }
 }
 
-
-fn ortho_rh(left: f32, right: f32, top: f32, bottom: f32) -> Mat4 {
-    Mat4::from_cols(
-        Vec4::new(2.0f32 / (right - left), 0.0, 0.0, 0.0),
-        Vec4::new(0.0, 2.0f32 / (top - bottom), 0.0, 0.0),
-        Vec4::new(0.0, 0.0, -1.0f32, 0.0),
-        Vec4::new(-(right + left) / (right - left), -(top + bottom) / (top - bottom), 0.0, 1.0f32))
+fn point_in_circle(point: Vec2, circle: Vec2, circle_radius: f32) -> bool {
+    let distance: f32 = (point.x - circle.x).powi(2) + (point.y - circle.y).powi(2);
+    distance < circle_radius.powi(2)
 }
 
-fn ortho(left: f32, right: f32, top: f32, bottom: f32, near: f32, far: f32) -> Mat4 {
-    Mat4::from_cols(
-        Vec4::new(2.0f32 / (right - left), 0.0, 0.0, 0.0),
-        Vec4::new(0.0, 2.0f32 / (top - bottom), 0.0, 0.0),
-        Vec4::new(0.0, 0.0, 2.0f32 / (far - near), 0.0),
-        Vec4::new(-(right + left) / (right - left), -(top + bottom) / (top - bottom), -(far + near) / (far - near), 1.0f32))
+fn randomize_pois(target: u32, left: f32, right: f32, bottom: f32, top: f32, exclude_radius_from_center: f32) -> Vec<Vec2> {
+    let xrange = Uniform::from(left..=right);
+    let yrange = Uniform::from(bottom..=top);
+    let mut rng = rand::thread_rng();
+
+    let mut pois: Vec<Vec2> = Vec::new();
+    let mut count = 0;
+
+    while count < target {
+        let x = xrange.sample(&mut rng);
+        let y = yrange.sample(&mut rng);
+
+        let p = Vec2::new(x, y);
+
+        if point_in_circle(p, Vec2::ZERO, exclude_radius_from_center) {
+            continue;
+        }
+
+        pois.push(p);
+        count += 1;
+    }
+
+    pois
 }
 
 
@@ -177,35 +192,20 @@ fn main() {
         vertices
     }
 
-    let mut points: Vec<Vec2> = Vec::new();
-
-    let circle = gen_circle(1.0f32, 28);
-
-    let vs = compile_shader(VS_SRC, gl::VERTEX_SHADER);
-    let fs = compile_shader(FS_SRC, gl::FRAGMENT_SHADER);
-    let prog = link_program(vs, fs);
+    let circle_vertices = gen_circle(1.0f32, 28);
+    let mut vao_circle: GLuint = 0;
+    let mut vbo_circle: GLuint = 0;
 
     unsafe {
-        gl::DeleteShader(vs);
-        gl::DeleteShader(fs);
-    }
+        gl::GenVertexArrays(1, &mut vao_circle);
+        gl::GenBuffers(1, &mut vbo_circle);
 
-    let u_mvp_prog = get_uniform(prog, "u_mvp");
-    let u_color_prog = get_uniform(prog, "u_color");
-
-    let mut vao: GLuint = 0;
-    let mut vbo: GLuint = 0;
-
-    unsafe {
-        gl::GenVertexArrays(1, &mut vao);
-        gl::GenBuffers(1, &mut vbo);
-
-        gl::BindVertexArray(vao);
-        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+        gl::BindVertexArray(vao_circle);
+        gl::BindBuffer(gl::ARRAY_BUFFER, vbo_circle);
 
         gl::BufferData(gl::ARRAY_BUFFER,
-            (circle.len() * mem::size_of::<Vec2>()) as GLsizeiptr,
-            mem::transmute(&circle[0]),
+            (circle_vertices.len() * mem::size_of::<Vec2>()) as GLsizeiptr,
+            mem::transmute(&circle_vertices[0]),
             gl::STATIC_DRAW,
         );
 
@@ -220,12 +220,72 @@ fn main() {
         );
 
         gl::BindVertexArray(0);
-        gl::DeleteBuffers(1, &vbo);
+        gl::DeleteBuffers(1, &vbo_circle);
     }
 
-    let view = Mat4::look_at_rh(Vec3::Z * 1.0f32, Vec3::ZERO, Vec3::Y);
-    // let view = Mat4::IDENTITY;
-    let mut projection = ortho(0.0f32, width as f32, 0.0f32, height as f32, -1.0f32, 1.0f32);
+    let mut points = randomize_pois(10, -150.0f32, 150.0f32, -80.0f32, 80.0f32, 40.0f32);
+    let mut path_indices: Vec<u32> = (0..points.len() as u32).collect();
+    let mut vao_path: GLuint = 0;
+    let mut vbo_path: GLuint = 0;
+    let mut ibo_path: GLuint = 0;
+
+    unsafe {
+        gl::GenVertexArrays(1, &mut vao_path);
+        gl::GenBuffers(1, &mut vbo_path);
+        gl::GenBuffers(1, &mut ibo_path);
+
+        gl::BindVertexArray(vao_path);
+        gl::BindBuffer(gl::ARRAY_BUFFER, vbo_path);
+        gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ibo_path);
+
+        gl::BufferData(gl::ARRAY_BUFFER,
+            (points.len() * mem::size_of::<Vec2>()) as GLsizeiptr,
+            mem::transmute(&points[0]),
+            gl::STATIC_DRAW,
+        );
+
+        gl::EnableVertexAttribArray(0);
+        gl::VertexAttribPointer(
+            0,
+            2,
+            gl::FLOAT,
+            gl::FALSE,
+            0,
+            ptr::null(),
+        );
+
+        gl::BufferData(gl::ELEMENT_ARRAY_BUFFER,
+            (path_indices.len() * mem::size_of::<u32>()) as GLsizeiptr,
+            mem::transmute(&path_indices[0]),
+            gl::DYNAMIC_DRAW,
+        );
+
+        gl::BindVertexArray(0);
+        gl::DeleteBuffers(1, &vbo_path);
+        gl::DeleteBuffers(1, &ibo_path);
+
+        gl::LineWidth(10.0f32);
+    }
+
+    let view = Mat4::look_at_rh(Vec3::Z * 100.0f32, Vec3::ZERO, Vec3::Y);
+    let mut projection = Mat4::perspective_rh(
+        90.0f32.to_radians(),
+        width as f32 / height as f32,
+        0.1f32,
+        100.0f32
+    );
+
+    let vs = compile_shader(VS_SRC, gl::VERTEX_SHADER);
+    let fs = compile_shader(FS_SRC, gl::FRAGMENT_SHADER);
+    let prog = link_program(vs, fs);
+
+    unsafe {
+        gl::DeleteShader(vs);
+        gl::DeleteShader(fs);
+    }
+
+    let u_mvp_prog = get_uniform(prog, "u_mvp");
+    let u_color_prog = get_uniform(prog, "u_color");
 
     while !window.should_close() {
         glfw.poll_events();
@@ -240,26 +300,46 @@ fn main() {
             gl::Clear(gl::COLOR_BUFFER_BIT);
 
             gl::UseProgram(prog);
-            gl::BindVertexArray(vao);
-
             gl::Uniform4f(u_color_prog, 0.2549f32, 0.4117f32, 0.8823f32, 1.0f32);
+
+            gl::BindVertexArray(vao_circle);
 
             let model = Mat4::IDENTITY;
             let mvp = vp * model;
             gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
-            gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle.len() as i32);
+            gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle_vertices.len() as i32);
 
             let model = Mat4::from_translation(Vec3::new(-1.0f32, 0.047110435f32, 0.0f32)) * Mat4::IDENTITY;
             let mvp = vp * model;
             gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
-            gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle.len() as i32);
+            gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle_vertices.len() as i32);
 
             for pos in &points {
                 let model = Mat4::from_translation(Vec3::new(pos.x, pos.y, 0.0f32)) * Mat4::IDENTITY;
                 let mvp = vp * model;
                 gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
-                gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle.len() as i32);
+                gl::DrawArrays(gl::TRIANGLE_FAN, 0, circle_vertices.len() as i32);
             }
+
+            gl::BindVertexArray(vao_path);
+
+
+            // let indices_buffer = gl::MapBufferRange(gl::ELEMENT_ARRAY_BUFFER,
+            //     0,
+            //     path_indices.len() as isize,
+            //     gl::MAP_WRITE_BIT | gl::MAP_INVALIDATE_BUFFER_BIT,
+            // );
+            // ptr::copy(
+            //     &path_indices[0] as *const usize as *mut c_void,
+            //     indices_buffer,
+            //     path_indices.len(),
+            // );
+            // gl::UnmapBuffer(gl::ELEMENT_ARRAY_BUFFER);
+
+            let model = Mat4::IDENTITY;
+            let mvp = vp * model;
+            gl::UniformMatrix4fv(u_mvp_prog, 1, gl::FALSE, &mvp.to_cols_array()[0]);
+            gl::DrawElements(gl::LINE_LOOP, path_indices.len() as i32, gl::UNSIGNED_INT, null());
 
             gl::BindVertexArray(0);
             gl::UseProgram(0);
@@ -269,7 +349,7 @@ fn main() {
     }
 
     unsafe {
-        gl::DeleteVertexArrays(1, &vao);
+        gl::DeleteVertexArrays(1, &vao_circle);
         gl::DeleteProgram(prog);
     }
 }
@@ -284,35 +364,12 @@ fn handle_window_event(window: &mut glfw::Window, event: glfw::WindowEvent, poin
             unsafe {
                 gl::Viewport(0, 0, width, height);
             }
-            *projection = ortho(0.0f32, width as f32, 0.0f32, height as f32, -1.0f32, 1.0f32);
-        }
-        glfw::WindowEvent::MouseButton(button, Action::Release, _) => {
-            if button > glfw::MouseButton::Button2 {
-                return;
-            }
-
-            let (x, y) = window.get_cursor_pos();
-            println!("x: {x}, y: {y}");
-
-            let final_matrix = projection.mul_mat4(view).inverse();
-
-            let (w, h) = window.get_size();
-            let ndc = Vec3::new(x as f32 / w as f32, 1.0f32 - (y as f32 / h as f32), -10.0f32) * 2.0f32 - 1.0f32;
-            let homogeneous = final_matrix * Vec4::new(ndc.x, ndc.y, ndc.z, 1.0f32);
-
-            let world_pos = Vec2::new(homogeneous.x, homogeneous.y) / homogeneous.w;
-            println!("{world_pos:?}");
-
-            match button {
-                glfw::MouseButtonLeft => {
-                    println!("Adding destination");
-                    points.push(Vec2::new(-1.0f32 + 2.0f32 * x as f32 / w as f32, 1.0f32 - 2.0f32 * y as f32 / h as f32));
-                }
-                glfw::MouseButtonRight => {
-                    println!("Removing destination");
-                }
-                _ => { return; }
-            }
+            *projection = Mat4::perspective_rh(
+                90.0f32.to_radians(),
+                width as f32 / height as f32,
+                0.1f32,
+                100.0f32
+            );
         }
         _ => {}
     }
