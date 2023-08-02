@@ -156,29 +156,61 @@ fn random_path() -> Vec<u32> {
     vec
 }
 
-fn evaluate_solution(tx: mpsc::Sender<Vec<u32>>, indices: Vec<u32>) {
-    tx.send(indices).unwrap();
+static mut best_tour_distance: f32 = f32::MAX;
+static mut solution_counter: u128 = 0;
+
+fn calculate_distance(points: Vec<Vec2>, a: usize, b: usize) -> f32 {
+    (points[a].x - points[b].x).powi(2) + (points[a].y - points[b].y).powi(2)
 }
 
-fn generate_solutions(tx: mpsc::Sender<Vec<u32>>, mut indices: Vec<u32>, n: usize) {
+fn evaluate_solution(tx: mpsc::Sender<Vec<u32>>, points: Vec<Vec2>, indices: Vec<u32>, num_solutions: u128) {
+    if indices[0] >= indices[indices.len() - 2] {
+        return;
+    }
+
+    unsafe {
+        solution_counter += 1;
+        println!("Searched: {} / {}", solution_counter, num_solutions);
+    }
+
+    let mut tour_distance = 0.0f32;
+    for i in 0..indices.len() {
+        let next_idx = (i + 1) % indices.len();
+        tour_distance += calculate_distance(points.clone(), indices[i] as usize, indices[next_idx] as usize);
+    }
+
+    unsafe {
+        if tour_distance < best_tour_distance {
+            best_tour_distance = tour_distance;
+            tx.send(indices).unwrap();
+        }
+    }
+}
+
+fn generate_solutions(tx: mpsc::Sender<Vec<u32>>, points: Vec<Vec2>, mut indices: Vec<u32>, n: usize, num_solutions: u128) {
     if n == 1 {
-        evaluate_solution(tx, indices);
+        evaluate_solution(tx, points, indices, num_solutions);
     } else {
         for i in 0..n {
-            generate_solutions(tx.clone(), indices.clone(), n - 1);
+            generate_solutions(tx.clone(), points.clone(), indices.clone(), n - 1, num_solutions);
             let swap_index = if n % 2 == 0 { i } else { 0 };
             (indices[swap_index], indices[n - 1]) = (indices[n - 1], indices[swap_index])
         }
     }
 }
 
-fn solve(tx: mpsc::Sender<Vec<u32>>, indices: Vec<u32>) {
+fn solve(tx: mpsc::Sender<Vec<u32>>, points: Vec<Vec2>, indices: Vec<u32>) {
     // loop {
     //     tx.send(random_path()).unwrap();
     //     thread::sleep(Duration::from_secs_f32(0.5f32));
     // }
 
-    generate_solutions(tx, indices.clone(), indices.len() - 1);
+    fn factorial(num: u128) -> u128 {
+        (1..=num).product()
+    }
+
+    let num_solutions = factorial(indices.len() as u128 - 1) / 2;
+    generate_solutions(tx, points, indices.clone(), indices.len() - 1, num_solutions);
 }
 
 fn main() {
@@ -251,7 +283,7 @@ fn main() {
         gl::DeleteBuffers(1, &vbo_circle);
     }
 
-    let mut points = randomize_pois(5, -150.0f32, 150.0f32, -80.0f32, 80.0f32, 40.0f32);
+    let mut points = randomize_pois(10, -150.0f32, 150.0f32, -80.0f32, 80.0f32, 40.0f32);
     let mut path_indices: Vec<u32> = (0..points.len() as u32).collect();
 
     let mut vao_path: GLuint = 0;
@@ -293,7 +325,7 @@ fn main() {
         gl::DeleteBuffers(1, &vbo_path);
         gl::DeleteBuffers(1, &ibo_path);
 
-        gl::LineWidth(8.0f32);
+        gl::LineWidth(3.0f32);
     }
 
     let view = Mat4::look_at_rh(Vec3::Z * 100.0f32, Vec3::ZERO, Vec3::Y);
@@ -319,7 +351,8 @@ fn main() {
     let (tx, rx) = mpsc::channel();
 
     let indices = path_indices.to_owned();
-    thread::spawn(move || solve(tx, indices));
+    let pois = points.to_owned();
+    thread::spawn(move || solve(tx, pois, indices));
 
     while !window.should_close() {
         glfw.poll_events();
@@ -388,7 +421,6 @@ fn handle_window_event(window: &mut glfw::Window, event: glfw::WindowEvent, _poi
             window.set_should_close(true)
         }
         glfw::WindowEvent::FramebufferSize(width, height) => {
-            println!("FramebufferSize: {width}, {height}");
             unsafe {
                 gl::Viewport(0, 0, width, height);
             }
